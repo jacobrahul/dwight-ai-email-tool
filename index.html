@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DwightAI - Email Draft Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap');
+        
+        /* Base Colors & Typography (Retained luxurious look) */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a; 
+            color: #f0f0f0; 
+            transition: background-color 0.5s, color 0.5s;
+        }
+
+        /* --- GRADIENT DEFINITIONS --- */
+        .cta-gradient { background-image: linear-gradient(to right, #e879f9, #9333ea); }
+        .cta-gradient-hover:hover { background-image: linear-gradient(to right, #d946ef, #7e22ce); }
+        .cta-text-gradient {
+            background-clip: text; -webkit-background-clip: text; color: transparent;
+            background-image: linear-gradient(to right, #e879f9, #9333ea);
+        }
+
+        /* --- DARK MODE STYLES --- */
+        .premium-card {
+            background-color: #1a1a20; 
+            border-radius: 2rem;
+            box-shadow: 0 0 20px rgba(147, 51, 234, 0.15), 0 0 5px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(147, 51, 234, 0.2);
+            transition: all 0.5s ease;
+        }
+        .premium-input, #output-box, .feature-card {
+            background-color: #2c2c36; 
+            border: 1px solid #444450;
+            color: #f0f0f0;
+        }
+        .premium-button {
+            box-shadow: 0 0 15px rgba(147, 51, 234, 0.8), 0 0 5px rgba(232, 121, 249, 0.5);
+        }
+        .feature-text-emphasis { color: #f0f0f0; font-weight: 600; } 
+
+        /* --- LIGHT MODE STYLES (Readability) --- */
+        body.light-mode { background-color: #ffffff; color: #1f2937; }
+        .light-mode .premium-card {
+            background-color: #f9fafb;
+            box-shadow: 0 5px 20px -5px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05);
+            border: 1px solid #e5e7eb;
+        }
+        .light-mode .premium-input, .light-mode #output-box, .light-mode .feature-card {
+            background-color: #ffffff; border-color: #d1d5db; color: #1f2937;
+        }
+        .light-mode .text-gray-900, .light-mode .text-gray-800, .light-mode .text-gray-700 { color: #111827 !important; }
+        .light-mode .text-gray-500 { color: #4b5563; }
+        .light-mode .feature-text-emphasis { color: #1f2937; font-weight: 600; }
+        .spinner { border-top-color: #f9fafb; border-left-color: transparent; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .toast { /* ... toast styles ... */ }
+    </style>
+
+    <!-- Firebase Imports for Auth and Firestore -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.userName = null;
+        window.appId = 'dwight-ai-prod'; // A static ID for production
+
+        // 🛑 IMPORTANT: PASTE YOUR FIREBASE CONFIG OBJECT HERE 🛑
+        const firebaseConfig = {
+            apiKey: "{ YOUR_API_KEY_HERE }",
+            authDomain: "{ YOUR_AUTH_DOMAIN_HERE }",
+            projectId: "{ YOUR_PROJECT_ID_HERE }",
+            storageBucket: "{ YOUR_STORAGE_BUCKET_HERE }",
+            messagingSenderId: "{ YOUR_MESSAGING_SENDER_ID_HERE }",
+            appId: "{ YOUR_APP_ID_HERE }" 
+        };
+        
+        // This function will initialize Firebase and set up the auth listener
+        function initializeFirebase() {
+            if (!firebaseConfig.apiKey.includes("YOUR_")) {
+                setLogLevel('Debug');
+                const firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(firebaseApp);
+                window.auth = getAuth(firebaseApp);
+
+                onAuthStateChanged(window.auth, (user) => {
+                    document.getElementById('initial-loading').classList.add('hidden');
+                    if (user) {
+                        window.userId = user.uid;
+                        window.userName = user.displayName || user.email?.split('@')[0] || 'User';
+                        document.getElementById('welcome-message').textContent = `Welcome, ${window.userName.split(' ')[0]}!`;
+                        document.getElementById('app-screen').classList.remove('hidden');
+                        document.getElementById('landing-screen').classList.add('hidden');
+                        document.getElementById('user-id-display').textContent = `User ID: ${user.uid}`;
+                        saveUserData(user); 
+                    } else {
+                        // Show landing page if not signed in
+                        document.getElementById('landing-screen').classList.remove('hidden');
+                        document.getElementById('app-screen').classList.add('hidden');
+                    }
+                });
+            } else {
+                console.error("FIREBASE ERROR: Please update firebaseConfig with your actual keys.");
+                document.getElementById('auth-error-message').textContent = "Configuration error: Missing Firebase keys.";
+                document.getElementById('initial-loading').classList.add('hidden');
+                document.getElementById('landing-screen').classList.remove('hidden');
+            }
+        }
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', initializeFirebase);
+        
+
+        // --- AUTH FUNCTIONS (Modified for real Google Sign-In) ---
+        window.signInWithGoogle = async () => {
+            const provider = new GoogleAuthProvider();
+            document.getElementById('google-signin-button').disabled = true;
+            document.getElementById('auth-loading-spinner').classList.remove('hidden');
+
+            try {
+                await signInWithPopup(window.auth, provider);
+                // Auth listener handles the UI update
+            } catch (error) {
+                console.error("Google Sign-In Failed:", error);
+                document.getElementById('auth-error-message').textContent = error.message.includes('popup-closed') ? "Sign-in cancelled." : "Sign-in failed. Check Console for details.";
+            } finally {
+                document.getElementById('google-signin-button').disabled = false;
+                document.getElementById('auth-loading-spinner').classList.add('hidden');
+            }
+        };
+
+        window.signOutUser = async () => {
+             if (window.auth) {
+                await signOut(window.auth);
+                // Auth listener handles the UI switch back to the landing page
+             }
+        }
+
+        // --- FIRESTORE USER TRACKING ---
+        async function saveUserData(user) {
+            if (!window.db || !user) return;
+            // Saves data to the 'user_signups' collection
+            const userRef = doc(window.db, `user_signups`, user.uid);
+            
+            try {
+                await setDoc(userRef, {
+                    uid: user.uid,
+                    email: user.email || 'N/A',
+                    displayName: user.displayName || 'User',
+                    last_signed_in_at: serverTimestamp(),
+                    // Use merge: true to avoid overwriting and to track first sign-up time only once
+                }, { merge: true }); 
+                console.log("User sign-up tracked successfully in Firestore.");
+            } catch (error) {
+                console.error("Error writing user data to Firestore:", error);
+            }
+        }
+    </script>
+</head>
+<body class="p-4 flex items-center justify-center min-h-screen">
+    
+    <!-- Theme Toggle Button -->
+    <div class="fixed top-5 right-5 z-20">
+        <label for="theme-toggle" class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="theme-toggle" class="sr-only peer" onclick="toggleTheme()">
+            <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+            <span class="ml-3 text-sm font-medium text-white">
+                <span id="theme-icon">🌙</span>
+            </span>
+        </label>
+    </div>
+
+    <!-- Initial Loading State -->
+    <div id="initial-loading" class="fixed inset-0 flex items-center justify-center bg-[#0a0a0a] z-50">
+        <div class="text-center space-y-4">
+            <div class="spinner border-8 border-solid border-purple-400 border-b-transparent h-16 w-16 rounded-full mx-auto"></div>
+            <p class="text-xl text-white font-semibold cta-text-gradient">Loading DwightAI...</p>
+        </div>
+    </div>
+
+    <!-- === LANDING SCREEN (Displayed when NOT signed in) === -->
+    <div id="landing-screen" class="w-full max-w-xl premium-card p-6 md:p-10 space-y-10 hidden">
+        <header class="text-center space-y-1">
+            <h1 class="text-4xl font-black text-white tracking-tight">
+                Ask <span class="cta-text-gradient px-2 rounded-lg">DwightAI</span>
+            </h1>
+            <p class="text-lg text-gray-400 font-light pt-1">
+                Your AI-powered email writing expert.
+            </p>
+            <p class="text-sm font-semibold text-gray-600">By Jacob Rahul</p>
+        </header>
+
+        <div class="text-center space-y-6">
+            <p class="text-gray-300 text-lg font-bold">
+                Unlock instant, perfect drafts. Access requires signing in.
+            </p>
+            
+            <button id="google-signin-button" onclick="signInWithGoogle()" class="premium-button bg-red-600 hover:bg-red-700 w-full py-4 text-xl text-white flex items-center justify-center" style="box-shadow: 0 0 15px rgba(239, 68, 68, 0.7);">
+                <span id="auth-loading-spinner" class="spinner border-4 border-solid border-white border-b-transparent h-6 w-6 rounded-full mr-3 hidden"></span>
+                Sign In with Google
+            </button>
+            <p id="auth-error-message" class="text-sm text-red-400"></p>
+        </div>
+
+        <div class="space-y-8">
+            <h2 class="text-2xl font-black text-white text-center">Key Features</h2>
+            <div class="grid gap-6">
+                <div class="feature-card p-4 rounded-xl">
+                    <h3 class="text-lg font-bold cta-text-gradient">Tone Control Mastery</h3>
+                    <p class="text-gray-400 text-sm">Draft the perfect email for any scenario—from <span class="feature-text-emphasis">Urgent</span> and <span class="feature-text-emphasis">Analytical</span> to <span class="feature-text-emphasis">Friendly</span> and <span class="feature-text-emphasis">Persuasive</span>—with a single click.</p>
+                </div>
+                <div class="feature-card p-4 rounded-xl">
+                    <h3 class="text-lg font-bold cta-text-gradient">Precise Constraints</h3>
+                    <p class="text-gray-400 text-sm">Enforce style rules using the optional <span class="feature-text-emphasis">Dos and Don'ts</span> fields (e.g., "Do add emojis," "Don't exceed 100 words").</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- === APP SCREEN (Displayed after Sign-In) === -->
+    <div id="app-screen" class="w-full max-w-xl premium-card p-6 md:p-10 space-y-8 hidden">
+        
+        <!-- Header & Branding -->
+        <header class="pb-2 border-b border-gray-700 space-y-1">
+            <div class="flex justify-between items-start">
+                <h1 class="text-4xl font-black text-white tracking-tight">
+                    Ask <span class="cta-text-gradient">DwightAI</span>
+                </h1>
+                <button onclick="signOutUser()" class="text-sm font-semibold text-red-500 hover:text-red-400 transition">
+                    Sign Out
+                </button>
+            </div>
+            <p id="welcome-message" class="text-sm cta-text-gradient font-bold pt-1"></p>
+            <p id="user-id-display" class="text-xs text-gray-500 font-mono break-all"></p>
+        </header>
+
+        <!-- Input Fields (Drafting Interface) -->
+        <div class="space-y-5">
+            <div>
+                <label for="tone" class="block text-sm font-bold text-gray-300 mb-1">Select Tone</label>
+                <select id="tone" class="premium-input w-full p-3 rounded-xl focus:ring-purple-600 transition duration-150 ease-in-out">
+                    <option value="professional">Professional (Formal, Respectful)</option>
+                    <option value="friendly">Friendly and Casual (Warm, Approachable)</option>
+                    <option value="persuasive">Persuasive/Sales (Confident, Benefit-focused)</option>
+                    <option value="apologetic">Apologetic/Regretful (Sincere, Remedial)</option>
+                    <option value="analytical">Analytical (Fact-based, Objective, Structured)</option>
+                    <option value="urgent">Urgent (Direct, Action-Oriented, Time-Sensitive)</option>
+                    <option value="motivational">Motivational (Inspirational, Encouraging, Positive)</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="subject" class="block text-sm font-bold text-gray-300 mb-1">Draft Subject/Recipient</label>
+                <input type="text" id="subject" placeholder="e.g., Proposal for Q3 budget review to Jane Doe" class="premium-input w-full p-3 rounded-xl transition duration-150 ease-in-out">
+            </div>
+
+            <div>
+                <label for="instructions" class="block text-sm font-bold text-gray-300 mb-1">Main Instructions (What should the email say?)</label>
+                <textarea id="instructions" rows="4" placeholder="e.g., Confirm the meeting time is Tuesday at 10 AM, list three agenda points: 1. Q3 Results, 2. Q4 Strategy, 3. Team offsite planning." class="premium-input w-full p-3 rounded-xl resize-none transition duration-150 ease-in-out"></textarea>
+            </div>
+
+            <!-- Optional Dos Field -->
+            <div>
+                <label for="dos" class="block text-sm font-bold text-gray-300 mb-1">Dos (Optional style instructions)</label>
+                <input type="text" id="dos" placeholder="e.g., Do add fun emojis, make it humanized" class="premium-input w-full p-3 rounded-xl transition duration-150 ease-in-out">
+            </div>
+
+            <!-- Optional Don'ts Field -->
+            <div>
+                <label for="donts" class="block text-sm font-bold text-gray-300 mb-1">Don'ts (Optional constraints)</label>
+                <input type="text" id="donts" placeholder="e.g., Don't make it longer than 150 characters, avoid passive voice" class="premium-input w-full p-3 rounded-xl transition duration-150 ease-in-out">
+            </div>
+        </div>
+
+        <!-- Generate Button (Large, Pill, Gradient CTA with Ambient Glow) -->
+        <button id="generate-button" onclick="generateDraft()" class="premium-button cta-gradient cta-gradient-hover w-full py-4 font-black text-xl text-white flex items-center justify-center disabled:opacity-50">
+            <span id="button-text">Generate Email Draft</span>
+            <div id="loading-spinner" class="spinner border-4 border-solid h-6 w-6 rounded-full ml-3 hidden"></div>
+        </button>
+
+        <!-- Output Area -->
+        <div class="pt-2">
+            <h2 class="text-xl font-black text-white mb-3">Generated Draft:</h2>
+            <pre id="output-box" class="overflow-auto">Use the fields above to generate your perfect email.</pre>
+        </div>
+        
+        <!-- Copy Button - Hidden by default (Styled with Green for Success) -->
+        <div id="copy-container" class="mt-4 hidden">
+            <button id="copy-button" onclick="copyDraft()" class="premium-button bg-green-600 hover:bg-green-700 w-full py-3 font-extrabold text-lg text-white flex items-center justify-center" style="box-shadow: 0 0 15px rgba(16, 185, 129, 0.7);">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" class="w-6 h-6 inline mr-3 text-white">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75m3.75 0H18a2.25 2.25 0 0 1 2.25 2.25v10.5A2.25 2.25 0 0 1 18 21H6.75a2.25 2.25 0 0 1-2.25-2.25v-7.5m10.5-6.75L12 11.25l-2.25-2.25" />
+                </svg>
+                Copy Draft to Clipboard
+            </button>
+        </div>
+    </div>
+    
+    <!-- Toast Message (Confirmation Dialog) -->
+    <div id="toast-message" class="toast">
+        Subject and body copied to clipboard!
+    </div>
+
+
+    <script>
+        const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=";
+        const button = document.getElementById('generate-button');
+        const buttonText = document.getElementById('button-text');
+        const spinner = document.getElementById('loading-spinner');
+        const outputBox = document.getElementById('output-box');
+        const copyContainer = document.getElementById('copy-container');
+        const toastMessage = document.getElementById('toast-message');
+        const themeToggle = document.getElementById('theme-toggle');
+        const themeIcon = document.getElementById('theme-icon');
+
+        let generatedDraftText = "";
+        
+        // --- THEME LOGIC ---
+        window.toggleTheme = () => {
+            const isDarkMode = themeToggle.checked;
+            if (isDarkMode) {
+                document.body.classList.remove('light-mode');
+                themeIcon.textContent = '🌙';
+            } else {
+                document.body.classList.add('light-mode');
+                themeIcon.textContent = '☀️';
+            }
+            try {
+                localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+            } catch (e) {
+                console.warn("localStorage not available for theme setting.");
+            }
+        };
+
+        (function loadTheme() {
+            let preferredTheme = 'dark'; 
+            try { preferredTheme = localStorage.getItem('theme') || 'dark'; } catch (e) {}
+
+            if (preferredTheme === 'dark') {
+                themeToggle.checked = true;
+                toggleTheme(); 
+            } else {
+                themeToggle.checked = false;
+                toggleTheme(); 
+            }
+        })();
+        
+        // --- API & DRAFTING LOGIC ---
+
+        function parseGeminiResponse(result) {
+            const candidate = result.candidates?.[0];
+            const text = candidate?.content?.parts?.[0]?.text || "Generation failed: Could not extract text from API response.";
+            return { text };
+        }
+
+        async function fetchWithBackoff(apiUrl, payload, maxRetries = 3) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        return response;
+                    }
+
+                    if (response.status === 429 || response.status >= 500) {
+                        const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000); 
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+
+                    throw new Error(`API returned error status: ${response.status}`);
+
+                } catch (error) {
+                    if (i === maxRetries - 1) {
+                        throw error;
+                    }
+                }
+            }
+            throw new Error("Failed to fetch from API after multiple retries.");
+        }
+
+        async function generateDraft() {
+            if (!window.auth || !window.auth.currentUser) {
+                 outputBox.textContent = "Error: You must be signed in to generate drafts.";
+                 outputBox.style.color = '#f87171'; 
+                 return;
+            }
+
+            // 1. Get Inputs and Validate
+            const tone = document.getElementById('tone').value;
+            const subjectInput = document.getElementById('subject').value.trim();
+            const instructions = document.getElementById('instructions').value.trim();
+            const dosInput = document.getElementById('dos').value.trim();
+            const dontsInput = document.getElementById('donts').value.trim();
+            
+            if (!subjectInput || !instructions) {
+                outputBox.textContent = "Error: Please fill in both the Draft Subject/Recipient and Main Instructions.";
+                outputBox.style.color = '#f87171'; 
+                copyContainer.classList.add('hidden'); 
+                return;
+            }
+
+            // 2. Set UI to Loading State
+            button.disabled = true;
+            buttonText.textContent = 'Generating...';
+            spinner.classList.remove('hidden');
+            outputBox.textContent = 'Contacting DwightAI...';
+            outputBox.style.color = '#93939c'; 
+            copyContainer.classList.add('hidden');
+
+            try {
+                // 3. Construct Prompts and Payload
+                let systemPrompt = `You are a professional email drafting assistant named DwightAI. Draft a complete, well-formatted email in plain text. Keep the email **short, concise, and under 150 words**. Start with the "Subject: " followed by the subject line, then a newline, then a blank line, and then the salutation and the body. Do not include markdown code blocks or any extra explanation. The required tone is **${tone}**.`;
+                
+                let userQuery = `Draft an email based on these instructions, using a **${tone}** tone. The subject and recipient information is: "${subjectInput}". The core content to include is: "${instructions}".`;
+
+                if (dosInput) {
+                    userQuery += ` **PRIORITY DOs:** Specifically incorporate these instructions: ${dosInput}.`;
+                }
+
+                if (dontsInput) {
+                    userQuery += ` **PRIORITY DON'Ts:** Strictly avoid these elements: ${dontsInput}.`;
+                }
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: {
+                        parts: [{ text: systemPrompt }]
+                    },
+                };
+                
+                // 4. API Call
+                const response = await fetchWithBackoff(API_URL, payload);
+                const result = await response.json();
+
+                // 5. Process and Display Result
+                const { text } = parseGeminiResponse(result);
+                generatedDraftText = text; 
+                outputBox.textContent = text;
+                outputBox.style.color = 'inherit'; 
+                copyContainer.classList.remove('hidden');
+                
+            } catch (error) {
+                // 6. Handle Errors
+                console.error("Gemini API Error:", error);
+                outputBox.textContent = `[DwightAI Failure] Please try again. Detailed Error: ${error.message || 'Unknown network or processing failure.'}`;
+                outputBox.style.color = '#f87171'; 
+                copyContainer.classList.add('hidden'); 
+            } finally {
+                // 7. Reset UI
+                button.disabled = false;
+                buttonText.textContent = 'Generate Email Draft';
+                spinner.classList.add('hidden');
+            }
+        }
+
+        /**
+         * Copies the content of the output box (Subject + Body) to the clipboard
+         */
+        function copyDraft() {
+            const draftText = generatedDraftText.trim();
+            if (!draftText || draftText.includes('[DwightAI Failure]')) {
+                return; 
+            }
+
+            const tempTextArea = document.createElement('textarea');
+            tempTextArea.value = draftText;
+            
+            tempTextArea.style.position = 'fixed';
+            tempTextArea.style.top = '0';
+            tempTextArea.style.left = '0';
+            tempTextArea.style.opacity = '0';
+            
+            document.body.appendChild(tempTextArea);
+            tempTextArea.select();
+
+            try {
+                document.execCommand('copy');
+                
+                toastMessage.style.opacity = 1;
+                setTimeout(() => {
+                    toastMessage.style.opacity = 0;
+                }, 3000); 
+
+            } catch (err) {
+                console.error('Failed to copy text: ', err);
+            } finally {
+                document.body.removeChild(tempTextArea);
+            }
+        }
+    </script>
+</body>
+</html>
